@@ -1,0 +1,334 @@
+---
+title: "STATS 195 - Final Report"
+author: "AJ Fong 006513485"
+date: "2025-10-16"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(recipes)
+library(ggplot2)
+library(tidyverse)
+library(rvest)
+library(MASS)
+library(glmnet)
+library(kknn)
+library(mlr3verse)
+```
+
+## Timeline
+
+### October 10th - October 24: Creation of Data Set for Transfer Players in the MLS From 2010-2025
+
+```{r, include = FALSE}
+transfer_data <- read.csv("C:/Users/ajfon/OneDrive/Desktop/Nashville SC/TransferMarkt Scraping/player_transfer_data.csv")
+
+transfer_data$Position <- as.factor(transfer_data$Position)
+transfer_data$Fee_Type <- numeric(nrow(transfer_data))
+transfer_data$Age <- as.factor(transfer_data$Age)
+transfer_data$Team <- as.factor(transfer_data$Team)
+
+for (i in 1:nrow(transfer_data)) {
+  team <- trimws(transfer_data$Team[i])
+  if (team == "Chicago Fire") {
+    transfer_data$Team[i] <- "Chicago Fire FC"
+  } else if (team == "Houston Dynamo") {
+    transfer_data$Team[i] <- "Houston Dynamo FC"
+  } else if (team == "Columbus Crew") {
+    transfer_data$Team[i] <- "Columbus Crew SC"
+  }
+}
+
+
+for(i in 1:nrow(transfer_data)){
+  if (transfer_data$Fee[i] == "draft"){
+    transfer_data$Fee_Type[i] <- 1
+  } else if (transfer_data$Fee[i] == "?"){
+    transfer_data$Fee_Type[i] <- 2
+  }else if (transfer_data$Fee[i] == "loan transfer"){
+    transfer_data$Fee_Type[i] <- 3
+  }else if (grepl("^End of loan", transfer_data$Fee[i])){
+    transfer_data$Fee_Type[i] <- 4
+  } else {
+    transfer_data$Fee_Type[i] <- 5
+  }
+  
+}
+
+transfer_data_in <- transfer_data[transfer_data$In_or_Out == "In" 
+                                  & transfer_data$Season >= 2010 
+                                  & transfer_data$Season <= 2024, ]
+transfer_data_out <- transfer_data[transfer_data$In_or_Out == "Out"
+                                   & transfer_data$Season >= 2010 
+                                  & transfer_data$Season <= 2024, ]
+```
+
+```{r}
+head(transfer_data)
+```
+
+Using the **rvest** package, I created a data set that contained information from the website, *transfermarkt.us*. Throughout this process, I came across many different challenges with merging data together. Since there are two different transfer seasons in soccer (winter/summer), I had to pull data from both seasons separately and merge them together. This was easy using the **rbind** command. The main issue was combining players transferring in/out of the league as well as intraleague transfers.
+
+Some players would transfer from one team in the MLS to another team such as Atlanta FC to Dallas FC. This caused issues as their name would appear twice in the data set, one for each team. When it came to merging the data, this would cause repeats and mess up the **rbind** and **merge** functions. I discovered the solution to this issue would be to individually pull the *team_joined* and *team_left* data and find only the unique values of each one to remove the duplicates. This allowed for the merging of both data sets to include each team a player left and joined so that there were no *NA* values in those columns. After solving this issue, I used the **lapply** and **rep** functions to add the year and season that each transfer occurred.
+
+### October 25 - October 31st: Data Set Cleaning & Beginning of EDA
+
+With the web scraping portion being completed, there were still issues regarding the values in the data set. A significant issue was the monetary symbol at the beginning of the *Fee* and *Market_value* columns. This made it so that these columns were being treated as characters rather than numeric values. To fix this, I used the **gsub** and **grepl** functions to removed these symbols. I then converted columns *Team, Position,* and *Age* into factors.
+
+Another issue I came across was some teams having two names. For example, Chicago Fire FC was also named Chicago Fire. This initially caused issues in the EDA plot since the data was being improperly sorted. To address this issue, I used a **for loop** and **if-else** statement to properly change the names.
+
+```{r, results = "hide"}
+convert_value <- function(x) {
+  x_clean <- gsub("€|\\s", "", x)
+  x_clean <- gsub(",", ".", x_clean)
+  num <- rep(NA_real_, length(x_clean))
+  
+  k_idx <- grepl("k$", x_clean, ignore.case = TRUE)
+  num[k_idx] <- as.numeric(sub("k$", "", x_clean[k_idx], ignore.case = TRUE)) * 1000
+  
+  m_idx <- grepl("M$", x_clean, ignore.case = TRUE)
+  num[m_idx] <- as.numeric(sub("M$", "", x_clean[m_idx], ignore.case = TRUE)) * 1e6
+  
+  plain_idx <- !(k_idx | m_idx | is.na(x_clean) | x_clean %in% c("-", ""))
+  num[plain_idx] <- as.numeric(x_clean[plain_idx])
+  
+  return(num)
+}
+
+for (i in 1:nrow(transfer_data)) {
+  team <- trimws(transfer_data$Team[i])
+  if (team == "Chicago Fire") {
+    transfer_data$Team[i] <- "Chicago Fire FC"
+  } else if (team == "Houston Dynamo") {
+    transfer_data$Team[i] <- "Houston Dynamo FC"
+  } else if (team == "Columbus Crew") {
+    transfer_data$Team[i] <- "Columbus Crew SC"
+  }
+}
+```
+
+Questions:
+
+-   Which teams spend/sell the most
+
+    -   Have the highest spenders/sellers changed over time?
+
+-   Is there a trend in overall spending/selling year-over-year?
+
+    -   Is there more spending in the Summer or Winter window?
+
+To answer these questions, I created boxplots and scatterplots to understand the relationship between spending/selling and season. I used **tidyverse** and **ggplot** to tidy, summarise, and plot the data. For the boxplots, I converted most of them to a log scale as they made it easier to visualize since the normal scale plots were very squished with right tail skews. It made the plots more difficult to compare since it appeared there was minimal difference between them.
+
+When investigating the highest sellers/spender over time, I created scatterplots to visualize the teams. The trends that I noticed was Atlanta FC being the highest spender 6 times throughout the last 9 seasons and the almost exponential growth in spending year-over-year. A point that caught my attention was the spike in 2013 spending from Toronto FC.
+
+For season comparison, I noticed is that Winter spending is higher on average than Summer, but has more variance year-over-year. The higher variance is likely due to the sharp increase in buying during the Winter season in the last 4 years.
+
+Below are some of the EDA plots that I created to look at these trends:
+
+![](images/buying_fees_by_transfer_window.jpeg){width="329"}
+
+![](images/spending_by_season.jpeg){width="274"}
+
+### ![](images/most_spending_by_year.jpeg){width="348"}
+
+### November 1st - November 14th: Full EDA & Understanding NA Values
+
+Questions:
+
+-   Do teams spend more then they sell?
+
+-   Do teams spend more on younger or older players?
+
+-   Are teams spending more on attacking positions? Has there been a shift toward attacking positions vs other positions?
+
+Similar to the previous section, I used **tidyverse** and **ggplot** to organize the data and create boxplots and histograms. An issue I noticed when creating the data set was the prevelence of NA values. Throughout the data, there are constant missing values in the transfer fee amounts and market value. The missing values are due to the different types of transfer transactions. For example, players who are drafted from the NCAA will not have a transfer fee since the university is not being paid. The NA values can cause issues in model and EDA optimization if there are distinct patterns being found. I created a scatterplot to investigate the issue. Ideally, there would not be a distinct pattern inside the plot.
+
+```{r, out.width="100%", fig.show='hold', fig.align='center', echo = FALSE}
+knitr::include_graphics(c(
+"images/frequency_of_na.jpeg"
+))
+```
+
+Inside the scatterplot, there appears to be a negative-linear trend in NA values from the *?* type. The other types do not matter since players being drafted directly give the reason as to why they have a NA transfer fee. To address the negative-linear trend in the *?* type, I would omit any year before 2020 when creating a model to reduce the amount of NA values there are and negate the trend.
+
+Below are some of the EDA plots that I created to look at these trends:
+
+```{r, out.width="50%", fig.show='hold', fig.align='center', echo = FALSE}
+knitr::include_graphics(c(
+  "images/difference_in_buying_selling.jpeg",
+  "images/transfer_fees_into_mls_by_position.jpeg",
+  "images/transfer_fees_by_position.jpeg"
+))
+```
+
+```{r, results = "hide"}
+for(i in 1:nrow(transfer_data)){
+  if (transfer_data$Fee[i] == "draft"){
+    transfer_data$Fee_Type[i] <- 1
+  } else if (transfer_data$Fee[i] == "?"){
+    transfer_data$Fee_Type[i] <- 2
+  }else if (transfer_data$Fee[i] == "loan transfer"){
+    transfer_data$Fee_Type[i] <- 3
+  }else if (grepl("^End of loan", transfer_data$Fee[i])){
+    transfer_data$Fee_Type[i] <- 4
+  } else {
+    transfer_data$Fee_Type[i] <- 5
+  }
+  
+}
+```
+
+### November 15th - December 6th: Compiling EDA Plots & Classification Model Development
+
+Throughout these few weeks, I spent time creating a slide deck of all the EDA plots and creating a model to answer the question; When a player transfers with a fee, is there anything that drives overspending or underspending relative to the market value? Is it just age, nationality, position, or something else? For the EDA plots, I used Google Slides to create a slide deck. Each slide contained one plot along with 2-4 bullet points of observations regarding the plot. These slides culminate to show the overall trends in the data.
+
+The model I created was a classification model that used model selection criteria methods; AIC, BIC, and LASSO Regularization, to optimize the predictors. Below is the basic logistic regression created:
+
+```{r, include = FALSE}
+transfer_data_in$Age <- as.numeric(as.character(transfer_data_in$Age))
+transfer_data_in <- transfer_data_in %>%
+  mutate(across(where(is.character), as.factor))
+
+transfer_data_in_training <- transfer_data_in[transfer_data_in$Fee_Type == 5,]
+
+my_transfer_data_in_transform <- 
+  transfer_data_in_training %>% 
+  recipe(~., data = transfer_data_in_training) %>% 
+  step_impute_mean(all_numeric_predictors()) %>% 
+  step_impute_mode(all_nominal_predictors())
+
+#train
+transfer_data_in_transform <- prep(my_transfer_data_in_transform)
+
+#apply to a new data and becomes cleaned data set
+new_transfer_data_in <- bake(transfer_data_in_transform, 
+                      new_data = transfer_data_in_training)
+
+new_transfer_data_in$overvalued <- ifelse(new_transfer_data_in$Fee_num > new_transfer_data_in$Market_Value_num, 1, 0)
+```
+
+```{r}
+model <- glm(overvalued ~ Age + Position + Market_Value_num + Winter_Summer, data = new_transfer_data_in, family = "binomial")
+summary(model)
+```
+
+From here, I implemented AIC, BIC, and LASSO with the **MASS** package to determine the predictors that would be optimal for a cross validation classification test.
+
+```{r, include = FALSE}
+set.seed(112)
+## AIC
+aic_model <- stepAIC(model, direction = "both")
+
+### BIC
+bic_model <- stepAIC(model, direction = "both", k = log(nrow(new_transfer_data_in)))
+
+### LASSO REGRESSION ###
+log_model <- model.matrix(overvalued ~ Age + Position + Market_Value_num + Winter_Summer, data = new_transfer_data_in)[, -1] #Get rid of intercept
+
+#Cross validated LASSO with standard 10 Folds
+lasso_model <- cv.glmnet(log_model, new_transfer_data_in$overvalued, family = "binomial", alpha = 1, standardize = TRUE)
+
+lasso_coefs <- coef(lasso_model, s = "lambda.min")
+plot(lasso_model, main = "LASSO Plot")
+selected_vars <- rownames(lasso_coefs)[lasso_coefs[,1] != 0]
+```
+
+```{r}
+selected_vars
+summary(aic_model)
+summary(bic_model)
+```
+
+These models use different information criteria to select their optimal predictors. AIC has a lighter penalty on model complexity, which makes it more flexible criteria and often leads to more predictors in pursuit of better fit. BIC has a stricter criteria on complexity which tends to lead towards a smaller model. LASSO uses a $\lambda$ penalty which shrinks predictor coefficients towards 0. As $\lambda$ increases, some predictors becoming zero, effectively removing them from the model. Since BIC only has one predictor, I chose to do benchmark tests on only the AIC and LASSO models.
+
+```{r, results = "hide"}
+### AIC ###
+set.seed(123)
+new_transfer_data_in_aic <- new_transfer_data_in[,c(4,10,13,15)]
+
+tsk <- as_task_classif(new_transfer_data_in_aic, target = "overvalued")
+
+# Learners WITH predict_type = "prob"
+learners <- list(
+  lrn("classif.rpart", predict_type = "prob"),
+  lrn("classif.ranger", predict_type = "prob"),
+  lrn("classif.log_reg", predict_type = "prob"),
+  lrn("classif.kknn", predict_type = "prob")
+)
+
+# Add xgboost with one-hot encoding
+learners$encode_xgb <- as_learner(
+  po("encode", method = "one-hot") %>>%
+    lrn("classif.xgboost", predict_type = "prob")
+)
+
+# 10-fold CV
+rsmp_cv5 <- rsmp("cv", folds = 10)
+
+# Benchmark design
+bmr_design <- benchmark_grid(
+  tasks = tsk,
+  learners = learners,
+  resamplings = rsmp_cv5
+)
+
+# Run benchmark
+bmr <- benchmark(bmr_design)
+
+
+```
+
+```{r}
+# Results table
+results <- bmr$aggregate(list(msr("classif.mbrier"), msr("classif.acc")))[
+  , .(learner_id, classif.mbrier, classif.acc)
+]
+results
+```
+
+```{r, results = "hide"}
+### LASSO ###
+set.seed(123)
+new_transfer_data_in_lasso <- new_transfer_data_in[,c(4,5,10,13,15)]
+
+tsk <- as_task_classif(new_transfer_data_in_lasso, target = "overvalued")
+
+# Learners WITH predict_type = "prob"
+learners <- list(
+  lrn("classif.rpart", predict_type = "prob"),
+  lrn("classif.ranger", predict_type = "prob"),
+  lrn("classif.log_reg", predict_type = "prob"),
+  lrn("classif.kknn", predict_type = "prob")
+)
+
+# Add xgboost with one-hot encoding
+learners$encode_xgb <- as_learner(
+  po("encode", method = "one-hot") %>>%
+    lrn("classif.xgboost", predict_type = "prob")
+)
+
+# 10-fold CV
+rsmp_cv5 <- rsmp("cv", folds = 10)
+
+# Benchmark design
+bmr_design <- benchmark_grid(
+  tasks = tsk,
+  learners = learners,
+  resamplings = rsmp_cv5
+)
+
+# Run benchmark
+bmr <- benchmark(bmr_design)
+```
+
+```{r}
+# Results table
+results <- bmr$aggregate(list(msr("classif.mbrier"), msr("classif.acc")))[
+  , .(learner_id, classif.mbrier, classif.acc)
+]
+results
+```
+
+With the **mlr3verse** package, I used 10-fold cross-validation and benchmarked several classification models such as regression trees, random forests, logistic regression, K-Nearest Neighbors, and XGBoost. I used these to identify the best predictor of whether a player is overvalued. The LASSO-regularize random forest had the strongest performance with an accuracy of 73.3%. This indicates that the regression tree provides a reasonably strong level of predictive power.
